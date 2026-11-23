@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Dopamine — private preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;1,9..144,300&family=Josefin+Sans:wght@300;400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; min-height: 100svh; display: grid; place-items: center; padding: 24px;
+      background: #120e0b; color: #f2ebdf; font-family: "Josefin Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    main { width: min(100%, 400px); text-align: center; }
+    .mark { width: 40px; color: #9ca793; margin-bottom: 18px; }
+    h1 { margin: 0; font-family: "Fraunces", Georgia, serif; line-height: 1; font-weight:300;font-size:56px;letter-spacing:-.02em; }
+    .tag { margin: 10px 0 0; font-size: 12px; letter-spacing: .3em; text-transform: uppercase; opacity: .65; }
+    .note { margin: 36px 0 18px; font-size: 15px; line-height: 1.5; opacity: .8; }
+    form { display: grid; gap: 12px; }
+    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    input { width: 100%; padding: 15px 18px; border-radius: 999px; border: 1px solid color-mix(in srgb, #f2ebdf 30%, transparent);
+      background: color-mix(in srgb, #f2ebdf 6%, transparent); color: inherit; font: inherit; font-size: 16px; text-align: center; letter-spacing: .08em; }
+    input:focus { outline: 2px solid #9ca793; outline-offset: 2px; }
+    button { padding: 15px 18px; border: 0; border-radius: 999px; cursor: pointer; background: #f2ebdf; color: #120e0b;
+      font: inherit; font-size: 13px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
+    button:disabled { opacity: .6; cursor: progress; }
+    .err { min-height: 1.4em; margin: 4px 0 0; font-size: 14px; color: #9ca793; }
+  </style>
+</head>
+<body>
+  <main>
+    <svg class="mark" viewBox="0 0 100 124" aria-hidden="true"><path d="M47 30 C38 10 8 10 8 36 C8 58 34 74 50 96 C64 76 92 58 92 34 C92 14 70 8 64 22 C60 31 70 36 74 28" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/><ellipse cx="50" cy="113" rx="7" ry="6" fill="currentColor"/></svg>
+    <h1>Dopamine</h1>
+    <p class="tag">third place cafe</p>
+    <p class="note">This is a private preview.<br>Enter the password you were given.</p>
+    <form id="unlock">
+      <label for="pw" class="sr">Password</label>
+      <input id="pw" type="password" autocomplete="current-password" placeholder="Password" required autofocus>
+      <button type="submit">Unlock</button>
+      <p class="err" id="err" role="alert"></p>
+    </form>
+  </main>
+  <script>
+  (() => {
+    const ITER = 310000;
+    const KEY = 'preview-pass:' + location.pathname;
+    const form = document.getElementById('unlock');
+    const input = document.getElementById('pw');
+    const btn = form.querySelector('button');
+    const err = document.getElementById('err');
+    const payload = fetch('payload.bin', { cache: 'no-cache' }).then((r) => {
+      if (!r.ok) throw new Error('missing');
+      return r.arrayBuffer();
+    });
+
+    async function open(pw) {
+      if (!window.crypto || !crypto.subtle) throw new Error('insecure');
+      const buf = await payload;
+      const salt = buf.slice(0, 16), iv = buf.slice(16, 28), data = buf.slice(28);
+      const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+      const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: ITER, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+      const headLen = new DataView(plain).getUint32(0);
+      const head = JSON.parse(new TextDecoder().decode(new Uint8Array(plain, 4, headLen)));
+      const start = 4 + headLen;
+      let html = head.html;
+      for (const a of head.assets) {
+        const url = URL.createObjectURL(new Blob([new Uint8Array(plain, start + a.offset, a.length)], { type: a.type }));
+        html = html.split(a.path).join(url);
+      }
+      try { sessionStorage.setItem(KEY, pw); } catch (e) {}
+      document.open();
+      document.write(html);
+      document.close();
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      btn.disabled = true; btn.textContent = 'Unlocking…';
+      try {
+        await open(input.value.trim());
+      } catch (ex) {
+        btn.disabled = false; btn.textContent = 'Unlock';
+        err.textContent = ex && ex.message === 'insecure' ? 'Open this page over https to unlock it.'
+          : ex && ex.message === 'missing' ? 'The preview file is missing. Try again in a minute.'
+          : 'That password didn’t work. Check it and try again.';
+        input.select();
+      }
+    });
+
+    // same tab, same session: unlock again without asking
+    let saved = null;
+    try { saved = sessionStorage.getItem(KEY); } catch (e) {}
+    if (saved) {
+      btn.disabled = true; btn.textContent = 'Unlocking…';
+      open(saved).catch(() => {
+        try { sessionStorage.removeItem(KEY); } catch (e) {}
+        btn.disabled = false; btn.textContent = 'Unlock';
+      });
+    }
+  })();
+  </script>
+</body>
+</html>
